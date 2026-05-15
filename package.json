@@ -1,0 +1,28 @@
+{
+  "name": "webgpu-raytracer",
+  "version": "1.0.0",
+  "main": "src/index.ts",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "dev": "vite"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@webgpu/types": "*",
+    "@mori2003/jsimgui": "^0.13.0",
+    "@domgell/ts-util": "^1.0.7",
+    "@domgell/game-util": "^1.0.5",
+    "@domgell/webgpu-arraybuffer-writer": "*",
+    "@domgell/webgpu-builder": "^1.0.6",
+    "@domgell/webgpu-samples": "*",
+    "@domgell/webgpu-util": "*",
+    "@domgell/game-input": "^1.0.2",
+    "dom-game-math": "^1.0.13"
+  },
+  "devDependencies": {
+    "vite": "^8.0.5"
+  }
+}
