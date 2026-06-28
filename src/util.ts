@@ -5,6 +5,7 @@ import * as Game from "@domgell/game-util";
 import MeshInstance = Scene.MeshInstance;
 import {DebugRenderer} from "@domgell/webgpu-samples";
 import {BVH, transformBounds} from "./bvh.ts";
+import {buildBuffer} from "@domgell/webgpu-builder";
 
 // --------------------------------------- Scene ---------------------------------------
 

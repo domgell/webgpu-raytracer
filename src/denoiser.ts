@@ -50,22 +50,17 @@ export namespace Denoiser {
             .build("Denoiser.StateBuffer");
 
         const bg0 = buildBindGroup(device)
-            .entries(stateBuffer)
+            .entries(stateBuffer, sampleInfoBuffer)
             .layout(pl.getBindGroupLayout(0))
             .build("Denoiser.BindGroup0");
 
         // ------------------------------- Bind Group 1 --------------------------------
 
-        const denoiseTexture = buildTexture(device)
+        const inputTexture = buildTexture(device)
             .size(outputTexture.width, outputTexture.height)
             .format(outputTexture.format)
             .usage("storage-binding", "copy-dst")
-            .build("Denoiser.DenoiseTexture");
-
-        const bg1 = buildBindGroup(device)
-            .entries(sampleInfoBuffer, outputTexture, denoiseTexture)
-            .layout(pl.getBindGroupLayout(1))
-            .build("Denoiser.BindGroup1");
+            .build("Denoiser.InputTexture");
 
         // -------------------------------------------------------------------------------------
 
@@ -87,14 +82,16 @@ export namespace Denoiser {
                         .data(new Uint32Array([i]))
                         .build(`Denoiser.StepBuffer[${i}]`);
 
-                    const bg2 = buildBindGroup(device)
-                        .entries(stepBuffer)
-                        .layout(pl.getBindGroupLayout(2))
-                        .build(`Denoiser.BindGroup2[${i}]`);
+                    const pingTexture = i % 2 === 0 ? inputTexture : outputTexture;
+                    const pongTexture = i % 2 === 0 ? outputTexture : inputTexture;
+
+                    const bg1 = buildBindGroup(device)
+                        .entries(stepBuffer, pongTexture, pingTexture)
+                        .layout(pl.getBindGroupLayout(1))
+                        .build(`Denoiser.BindGroup1[${i}]`);
 
                     encoder.setBindGroup(0, bg0);
                     encoder.setBindGroup(1, bg1);
-                    encoder.setBindGroup(2, bg2);
                     encoder.dispatchWorkgroups(dispatchX, dispatchY);
                     encoder.popDebugGroup();
                 }

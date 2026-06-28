@@ -9,7 +9,7 @@
 
 // Screen bind group
 @group(1) @binding(0) var outputTexture: texture_storage_2d<rgba8unorm, write>;
-@group(1) @binding(1) var accumulationTexture: texture_storage_2d<rgba32float, read_write>;
+@group(1) @binding(1) var<storage, read_write> accumulationBuffer: array<vec3f>;
 @group(1) @binding(2) var<storage, read_write> sampleInfos: array<SampleInfo>;
 
 // State bind group
@@ -514,10 +514,13 @@ fn sampleTextureAtlas(id: u32, uv: vec2f) -> vec3f {
 // ----------------------------------- Accumulation ------------------------------------
 
 fn accumulateColor(coord: vec2u, color: vec3f) {
-    let previous = textureLoad(accumulationTexture, coord).rgb;
+    let index = coord.y * textureDimensions(outputTexture).x + coord.x;
+    //let previous = textureLoad(accumulationTexture, coord).rgb;
+    let previous = accumulationBuffer[index];
     let weight = 1.0 / (f32(state.frameIndex) + 1.0);
     let accumulated = mix(previous, color, weight);
-    textureStore(accumulationTexture, coord, vec4f(accumulated, 1));
+    //textureStore(accumulationTexture, coord, vec4f(accumulated, 1));
+    accumulationBuffer[index] = accumulated;
     textureStore(outputTexture, coord, vec4f(accumulated, 1));
 }
 

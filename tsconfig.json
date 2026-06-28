@@ -20,14 +20,7 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
-    "declaration": true,
-    "accessor-pairs": [
-      "error",
-      {
-        "setWithoutGet": true,
-        "getWithoutSet": true
-      }
-    ]
+    "declaration": true
   },
   "include": [
     "src",

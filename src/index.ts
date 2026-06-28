@@ -33,8 +33,7 @@ const saved = Game.load("saved");
 // WebGPU
 const {device, context, adapter} = await GPU.initWebGPU(canvas, {
     device: {
-        requiredFeatures: ["texture-formats-tier2"],
-        requiredLimits: {maxStorageBuffersPerShaderStage: 9}
+        requiredLimits: {maxStorageBuffersPerShaderStage: 10}
     },
     context: {usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT}
 });
@@ -174,7 +173,10 @@ Game.runUpdate((dt, t) => {
     // Run raytracing compute shader
     const computePass = cmd.beginComputePass();
     raytracer.run(computePass);
-    if (settings.denoising) denoiser.run(computePass);
+    if (settings.denoising) {
+        raytracer.resetAccumulation();
+        denoiser.run(computePass);
+    }
     computePass.end();
 
     // Render raytracing result to screen texture, and render UI and debug lines

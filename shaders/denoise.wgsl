@@ -1,10 +1,9 @@
 @group(0) @binding(0) var<uniform> state: State;
+@group(0) @binding(1) var<storage, read> sampleInfos: array<SampleInfo>;
 
-@group(1) @binding(0) var<storage, read> sampleInfos: array<SampleInfo>;
-@group(1) @binding(1) var outputTexture: texture_storage_2d<rgba8unorm, read_write>;
-@group(1) @binding(2) var denoiseTexture: texture_storage_2d<rgba8unorm, read_write>;
-
-@group(2) @binding(0) var<uniform> stepIndex: u32;
+@group(1) @binding(0) var<uniform> stepIndex: u32;
+@group(1) @binding(1) var inputTexture: texture_storage_2d<rgba8unorm, read>;
+@group(1) @binding(2) var outputTexture: texture_storage_2d<rgba8unorm, write>;
 
 // --------------------------------------- State ---------------------------------------
 
@@ -16,7 +15,6 @@ struct State {
     sigmaReflectPosition: f32,
     sigmaReflectDistance: f32,
 }
-
 
 // ------------------------------------ Sample Info ------------------------------------
 
@@ -33,19 +31,11 @@ struct SampleInfo {
 // -------------------------------------- Texture --------------------------------------
 
 fn readTexture(coord: vec2u) -> vec3f {
-    if stepIndex % 2 == 0 {
-        return textureLoad(outputTexture, coord).rgb;
-    } else {
-        return textureLoad(denoiseTexture, coord).rgb;
-    }
+    return textureLoad(inputTexture, coord).rgb;
 }
 
 fn writeTexture(coord: vec2u, color: vec3f) {
-    if stepIndex % 2 == 0 {
-        textureStore(denoiseTexture, coord, vec4f(color, 1.0));
-    } else {
-        textureStore(outputTexture, coord, vec4f(color, 1.0));
-    }
+    textureStore(outputTexture, coord, vec4f(color, 1.0));
 }
 
 // -------------------------------------- Random ---------------------------------------

@@ -100,11 +100,10 @@ export namespace Raytracer {
 
         // ------------------------------- Bind Group 1 --------------------------------
 
-        const accumulationTexture = buildTexture(device)
-            .size(outputTexture.width, outputTexture.height)
-            .format("rgba32float")
-            .usage("storage-binding")
-            .build("Raytracer.AccumulationTexture");
+        const accumulationBuffer = buildBuffer(device)
+            .size(GPU.Size.vec4f * outputTexture.width * outputTexture.height)
+            .usage("storage")
+            .build("Raytracer.AccumulationBuffer");
 
         const sampleInfoBuffer = buildBuffer(device)
             .size(structByteSizes.SampleInfo * outputTexture.width * outputTexture.height)
@@ -113,7 +112,7 @@ export namespace Raytracer {
 
         const bg1 = buildBindGroup(device)
             .layout(pl.getBindGroupLayout(1))
-            .entries(outputTexture, accumulationTexture, sampleInfoBuffer)
+            .entries(outputTexture, accumulationBuffer, sampleInfoBuffer)
             .build("Raytracer.BindGroup2");
 
         // ------------------------------- Bind Group 2 --------------------------------
