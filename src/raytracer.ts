@@ -1,8 +1,8 @@
 import * as GPU from "@domgell/webgpu-util";
-import {buildBindGroup, buildBuffer, buildTexture} from "@domgell/webgpu-builder";
+import {packNormalizedRgb1} from "@domgell/webgpu-util";
+import {buildBindGroup, buildBuffer} from "@domgell/webgpu-builder";
 import {getSamplerFilterNearestClampToEdge, TextureAtlas} from "@domgell/webgpu-samples";
 import {ArrayBufferWriter} from "@domgell/webgpu-arraybuffer-writer";
-import {packNormalizedRgb1} from "@domgell/webgpu-util";
 import {Scene} from "./scene.ts";
 
 export interface Raytracer {
@@ -223,6 +223,7 @@ export function updateRaytracerSettings(rt: Raytracer, settings: {
 export function updateRaytracerScene(rt: Raytracer, scene: Scene) {
     rt.frameIndex = 0; // Reset accumulation
 
+    rt.sceneBufferWriter.reset();
     for (const triangle of scene.triangles) {
         rt.sceneBufferWriter
             .vec3f(triangle.a)

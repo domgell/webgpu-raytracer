@@ -1,8 +1,5 @@
 import * as GPU from "@domgell/webgpu-util";
 import {buildBindGroup, buildBindGroupLayout, buildBuffer, buildTexture} from "@domgell/webgpu-builder";
-import {TextureAtlas} from "@domgell/webgpu-samples";
-import * as Game from "@domgell/game-util";
-import {Raytracer} from "./raytracer.ts";
 
 export interface Denoiser {
     device: GPUDevice,

@@ -1,38 +1,32 @@
 import * as GPU from "@domgell/webgpu-util";
+import {defaultColorTargetState} from "@domgell/webgpu-util";
 import * as Game from "@domgell/game-util";
 import {ImGui, ImGuiImplWeb} from "@mori2003/jsimgui";
 import {
     createRaytracer,
-    Raytracer,
     resizeRaytracer,
     runRaytracer,
     updateRaytracerScene,
     updateRaytracerSettings
 } from "./raytracer.ts";
-import {
-    TextureAtlas,
-    DebugRenderer,
-    TextureCopyRenderer,
-    FullscreenRenderer,
-    getSamplerFilterNearestClampToEdge
-} from "@domgell/webgpu-samples";
+import {DebugRenderer, FullscreenRenderer, TextureAtlas} from "@domgell/webgpu-samples";
 import {mat4, vec2, vec3} from "dom-game-math";
 import {Input} from "@domgell/game-input";
-import {defaultColorTargetState, generatePipelineLayout} from "@domgell/webgpu-util";
-import {buildBindGroup, buildBuffer, buildRenderPass, buildTexture} from "@domgell/webgpu-builder";
+import {buildBindGroup, buildBuffer, buildTexture} from "@domgell/webgpu-builder";
 import {
     createMouseRay,
-    createRoomScene, createTimestampState,
+    createRoomScene,
+    createTimestampState,
     drawMeshInstanceOutline,
     drawMeshNodes,
     drawSceneNodes,
-    pickMeshInstance, rollingAverage
+    pickMeshInstance,
+    rollingAverage
 } from "./util.ts";
 import {drawMeshUI, drawSettingsUI, Settings} from "./ui.ts";
 import {Scene} from "./scene.ts";
-import {createDenoiser, Denoiser, resizeDenoiser, runDenoiser, updateDenoiserSettings} from "./denoiser.ts";
+import {createDenoiser, resizeDenoiser, runDenoiser, updateDenoiserSettings} from "./denoiser.ts";
 import {BVH} from "./bvh.ts";
-import {assert, fail} from "@domgell/ts-util";
 
 // --------------------------------------- Init ----------------------------------------
 

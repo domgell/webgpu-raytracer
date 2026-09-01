@@ -2,11 +2,11 @@ import {assert} from "@domgell/ts-util";
 import {Scene} from "./scene.ts";
 import {mat4, Matrix4, quat, vec2, vec3, vec4, Vector2, Vector3} from "dom-game-math";
 import * as Game from "@domgell/game-util";
-import MeshInstance = Scene.MeshInstance;
 import {DebugRenderer} from "@domgell/webgpu-samples";
 import {BVH, transformBounds} from "./bvh.ts";
 import {buildBuffer} from "@domgell/webgpu-builder";
 import * as GPU from "@domgell/webgpu-util";
+import MeshInstance = Scene.MeshInstance;
 
 // --------------------------------------- Scene ---------------------------------------
 
