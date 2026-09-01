@@ -75,7 +75,7 @@ export namespace Denoiser {
                     encoder.setPipeline(pl);
 
                     // Buffer update needs to happen *during* compute pass encoding,
-                    // ideally immediates/pushconstants would be used for this when they are supported in WebGPU
+                    // ideally immediates/pushconstants would be used for this when they are fully supported in WebGPU
                     const stepBuffer = buildBuffer(device)
                         .size(GPU.Size.minimumUniformSize)
                         .usage("uniform")

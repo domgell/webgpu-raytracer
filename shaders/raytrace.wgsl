@@ -348,13 +348,13 @@ fn traceScene(cameraRay: Ray, sampleInfo: ptr<function, SampleInfo>, rng: ptr<fu
         if bounceCount == 0 {
             sampleInfo.normal = surfaceNormal;
             sampleInfo.depth = hit.distance;
-            sampleInfo.color = materialColor;
+            sampleInfo.color = pack4x8unorm(vec4f(materialColor, 1));
             sampleInfo.roughness = material.roughness;
         }
         if bounceCount == 1 {
             sampleInfo.reflectHitDistance = hit.distance;
             sampleInfo.reflectHitPosition = hit.position;
-            sampleInfo.reflectHitAlbedo = materialColor;
+            sampleInfo.reflectHitAlbedo = pack4x8unorm(vec4f(materialColor, 1));
         }
 
         // Hit light directly
@@ -529,11 +529,11 @@ fn accumulateColor(coord: vec2u, color: vec3f) {
 struct SampleInfo {
     normal: vec3f,
     depth: f32,
-    color: vec3f,
-    roughness: f32,
     reflectHitPosition: vec3f,
     reflectHitDistance: f32,
-    reflectHitAlbedo: vec3f,
+    reflectHitAlbedo: u32,
+    color: u32,
+    roughness: f32,
 }
 
 // --------------------------------------- Main ----------------------------------------

@@ -21,11 +21,11 @@ struct State {
 struct SampleInfo {
     normal: vec3f,
     depth: f32,
-    color: vec3f,
-    roughness: f32,
     reflectHitPosition: vec3f,
     reflectHitDistance: f32,
-    reflectHitAlbedo: vec3f,
+    reflectHitAlbedo: u32,
+    color: u32,
+    roughness: f32,
 }
 
 // -------------------------------------- Texture --------------------------------------
@@ -111,7 +111,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 rWeight *= bilateralWeight(reflectDistDiff * reflectDistDiff, adaptiveSigmaDist);
 
                 // Reflection albedo weight
-                let reflectAlbedoDiff = centerInfo.reflectHitAlbedo - sampleInfo.reflectHitAlbedo;
+                let reflectAlbedoDiff = (unpack4x8unorm(centerInfo.reflectHitAlbedo) - unpack4x8unorm(sampleInfo.reflectHitAlbedo)).rgb;
                 let sigmaReflectAlbedo = mix(0.02, 0.15, centerInfo.roughness);
                 rWeight *= bilateralWeight(dot(reflectAlbedoDiff, reflectAlbedoDiff), sigmaReflectAlbedo);
 
@@ -131,7 +131,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             weight *= bilateralWeight(depthDiff * depthDiff, state.sigmaDepth);
 
             // Albedo weight
-            let albedoDiff = centerInfo.color - sampleInfo.color;
+            let albedoDiff = (unpack4x8unorm(centerInfo.color) - unpack4x8unorm(sampleInfo.color)).rgb;
             weight *= bilateralWeight(dot(albedoDiff, albedoDiff), state.sigmaAlbedo);
 
             colorSum += sampleColor * weight;

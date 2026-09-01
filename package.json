@@ -18,7 +18,7 @@
     "@domgell/webgpu-arraybuffer-writer": "*",
     "@domgell/webgpu-builder": "^1.0.6",
     "@domgell/webgpu-samples": "*",
-    "@domgell/webgpu-util": "*",
+    "@domgell/webgpu-util": "^1.0.10",
     "@domgell/game-input": "^1.0.2",
     "dom-game-math": "^1.0.13"
   },

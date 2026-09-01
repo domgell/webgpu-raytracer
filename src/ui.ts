@@ -4,10 +4,12 @@ import {Scene} from "./scene.ts";
 import {TextureAtlas} from "@domgell/webgpu-samples";
 
 export interface Settings {
+    // Raytracing
     raysPerPixel: number,
     maxRayBounces: number,
     nee: boolean,
     accumulation: boolean,
+    // Denoising
     denoising: boolean,
     sigmaColor: number,
     sigmaNormal: number,
@@ -15,8 +17,16 @@ export interface Settings {
     sigmaAlbedo: number,
     sigmaReflectPosition: number,
     sigmaReflectDistance: number,
+    // BVH
     showSceneBVH: boolean,
     showMeshBVH: boolean,
+    // Timing
+    cpuTime: number,
+    timestampQuerySupport: boolean,
+    gpuRenderTime: number,
+    gpuDenoiserComputeTime: number,
+    gpuRaytracingComputeTime: number,
+    fps: number,
 }
 
 export function drawSettingsUI(settings: Settings) {
@@ -101,6 +111,25 @@ export function drawSettingsUI(settings: Settings) {
         if (ImGui.SliderFloat("Reflect Distance", sigmaReflectDistance, 0.01, 5)) {
             settings.sigmaReflectDistance = sigmaReflectDistance[0];
             changed = true;
+        }
+    }
+
+    if (ImGui.CollapsingHeader("Performance", ImGui.TreeNodeFlags.DefaultOpen)) {
+        ImGui.Text(`FPS (VSync): ${settings.fps.toFixed()}`);
+
+        if (settings.timestampQuerySupport) {
+            const sum = settings.gpuRaytracingComputeTime + settings.gpuDenoiserComputeTime + settings.gpuRenderTime;
+            ImGui.Text(`FPS (GPU): ${(1000 / sum).toFixed()}`);
+            ImGui.Text(`GPU Raytrace Time: ${settings.gpuRaytracingComputeTime.toFixed(2)} ms`);
+            ImGui.Text(`GPU Denoise Time: ${settings.gpuDenoiserComputeTime.toFixed(3)} ms`);
+            ImGui.Text(`GPU Render Time: ${settings.gpuRenderTime.toFixed(3)} ms`);
+        }
+
+        ImGui.Text(`CPU Time: ${settings.cpuTime.toFixed(4)} ms`);
+
+        if (!settings.timestampQuerySupport) {
+            ImGui.Spacing()
+            ImGui.Text("GPU Performance unavailable.\nWebGPU `timestamp-query` is not supported");
         }
     }
 

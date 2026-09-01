@@ -5,20 +5,21 @@ import {Raytracer} from "./raytracer.ts";
 import {TextureAtlas, DebugRenderer, TextureCopyRenderer, FullscreenRenderer} from "@domgell/webgpu-samples";
 import {mat4, vec2, vec3} from "dom-game-math";
 import {Input} from "@domgell/game-input";
-import {defaultColorTargetState} from "@domgell/webgpu-util";
+import {defaultColorTargetState, generatePipelineLayout} from "@domgell/webgpu-util";
 import {buildBindGroup, buildBuffer, buildRenderPass, buildTexture} from "@domgell/webgpu-builder";
 import {
     createMouseRay,
-    createRoomScene,
+    createRoomScene, createTimestampState,
     drawMeshInstanceOutline,
     drawMeshNodes,
     drawSceneNodes,
-    pickMeshInstance
+    pickMeshInstance, rollingAverage
 } from "./util.ts";
 import {drawMeshUI, drawSettingsUI, Settings} from "./ui.ts";
 import {Scene} from "./scene.ts";
 import {Denoiser} from "./denoiser.ts";
 import {BVH} from "./bvh.ts";
+import {assert, fail} from "@domgell/ts-util";
 
 // --------------------------------------- Init ----------------------------------------
 
@@ -33,14 +34,28 @@ const saved = Game.load("saved");
 // WebGPU
 const {device, context, adapter} = await GPU.initWebGPU(canvas, {
     device: {
+        requestedFeatures: ["timestamp-query"],
         requiredLimits: {maxStorageBuffersPerShaderStage: 10}
     },
-    context: {usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT}
+    context: {
+        usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    }
 });
+
+const timestampQuerySupport = adapter.features.has("timestamp-query");
 
 // ImGui
 await ImGuiImplWeb.Init({device, canvas, backend: "webgpu"});
 if (saved?.imgui) ImGui.LoadIniSettingsFromMemory(saved.imgui);
+
+// ------------------------------------ Performance ------------------------------------
+
+const cpuTime = rollingAverage();
+const gpuRaytracingComputeTime = rollingAverage();
+const gpuDenoiserComputeTime = rollingAverage();
+const gpuRenderTime = rollingAverage();
+
+const timestampState = timestampQuerySupport ? createTimestampState(device, 3) : undefined;
 
 // ---------------------------------- Init Renderers -----------------------------------
 
@@ -72,7 +87,8 @@ const denoiser = Denoiser.create({
     shader: await Game.importText("shaders/denoise.wgsl"),
 });
 
-const colorState = defaultColorTargetState({format: "bgra8unorm"});
+const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+const colorState = defaultColorTargetState({format: canvasFormat});
 const debugRenderer = DebugRenderer.create({device, camera: cameraBuffer, color: colorState});
 const outputRenderer = TextureCopyRenderer.create({device, texture: outputTexture, color: colorState});
 
@@ -99,6 +115,12 @@ const settings: Settings = {
     sigmaAlbedo: 0.01,
     sigmaReflectPosition: 0.5,
     sigmaReflectDistance: 0.25,
+    timestampQuerySupport,
+    cpuTime: 0,
+    gpuRenderTime: 0,
+    gpuDenoiserComputeTime: 0,
+    gpuRaytracingComputeTime: 0,
+    fps: 0,
 };
 
 raytracer.updateSettings(settings);
@@ -160,7 +182,6 @@ Game.runUpdate((dt, t) => {
     if (settings.showSceneBVH) drawSceneNodes(scene, debugRenderer);
     if (settings.showMeshBVH) drawMeshNodes(scene, debugRenderer);
 
-    // Clear accumulation every frame when disabled
     if (!settings.accumulation) raytracer.resetAccumulation();
 
     // ------------------------------------ Render -------------------------------------
@@ -171,25 +192,49 @@ Game.runUpdate((dt, t) => {
     const cmd = device.createCommandEncoder();
 
     // Run raytracing compute shader
-    const computePass = cmd.beginComputePass();
-    raytracer.run(computePass);
+    const raytracePass = cmd.beginComputePass({timestampWrites: timestampState?.getTimestampWrite(0)});
+    raytracer.run(raytracePass);
+    raytracePass.end();
+
+    // Run denoising compute shader
     if (settings.denoising) {
+        const denoisePass = cmd.beginComputePass({timestampWrites: timestampState?.getTimestampWrite(1)});
         raytracer.resetAccumulation();
-        denoiser.run(computePass);
+        denoiser.run(denoisePass);
+        denoisePass.end();
+    } else {
+        gpuDenoiserComputeTime.clear();
     }
-    computePass.end();
 
     // Render raytracing result to screen texture, and render UI and debug lines
     const currentTexture = context.getCurrentTexture();
-    const renderPass = buildRenderPass(cmd).color(currentTexture).build();
+    const renderPass = cmd.beginRenderPass({
+        colorAttachments: [GPU.createColorAttachment(currentTexture, [0, 0, 0, 1])],
+        timestampWrites: timestampState?.getTimestampWrite(2),
+    });
     outputRenderer.render(renderPass);
     debugRenderer.render(renderPass);
     ImGuiImplWeb.EndRender(renderPass);
     renderPass.end();
 
-    // ---------------------------------------------------------------------------------
-
+    timestampState?.resolve(cmd);
     GPU.submitCommandEncoder(device, cmd);
+
+    // ---------------------------------- Performance ----------------------------------
+
+    timestampState?.update(gpuRaytracingComputeTime, gpuDenoiserComputeTime, gpuRenderTime);
+
+    // CPU time this frame
+    const now = performance.now() / 1000;
+    cpuTime.add(now - t);
+
+    settings.cpuTime = cpuTime.get();
+    settings.fps = 1 / dt;
+    settings.gpuRaytracingComputeTime = gpuRaytracingComputeTime.get();
+    settings.gpuDenoiserComputeTime = gpuDenoiserComputeTime.get();
+    settings.gpuRenderTime = gpuRenderTime.get();
+
+    // ---------------------------------------------------------------------------------
 
     input.flush();
 

@@ -6,6 +6,7 @@ import MeshInstance = Scene.MeshInstance;
 import {DebugRenderer} from "@domgell/webgpu-samples";
 import {BVH, transformBounds} from "./bvh.ts";
 import {buildBuffer} from "@domgell/webgpu-builder";
+import * as GPU from "../../webgpu-util";
 
 // --------------------------------------- Scene ---------------------------------------
 
@@ -313,5 +314,94 @@ export function drawMeshNodes(scene: Scene, debugRenderer: DebugRenderer) {
         }
         const bounds = transformBounds(meshBase.bounds, meshInstance.transform);
         debugRenderer.aabb(bounds.min, bounds.max, vec3.new(0.65, 0, 1));
+    }
+}
+
+// ------------------------------------ Performance ------------------------------------
+
+export function rollingAverage(maxSamples = 32) {
+    const samples = new Float64Array(maxSamples);
+    let head = 0;
+    let size = 0;
+    let sum = 0;
+
+    return {
+        get(): number {
+            return size === 0 ? 0 : sum / size;
+        },
+        add(sample: number) {
+            if (size < maxSamples) {
+                samples[head] = sample;
+                sum += sample;
+                size++;
+                head = (head + 1) % maxSamples;
+                return;
+            }
+
+            // Overwrite oldest
+            const old = samples[head];
+            sum -= old;
+
+            samples[head] = sample;
+            sum += sample;
+
+            head = (head + 1) % maxSamples;
+        },
+        clear() {
+            head = 0;
+            size = 0;
+            sum = 0;
+        }
+    };
+}
+
+export function createTimestampState(device: GPUDevice, timestampCount: number) {
+    const timestampQuerySet = device.createQuerySet({
+        type: "timestamp",
+        count: timestampCount * 2,
+    });
+
+    const timestampQueryBuffer = buildBuffer(device)
+        .size(timestampCount * 4 * GPU.Size.u32)
+        .usage("query-resolve", "copy-src")
+        .build("TimestampQueryBuffer");
+
+    const timestampResultBuffer = buildBuffer(device)
+        .size(timestampCount * 4 * GPU.Size.u32)
+        .usage("copy-dst", "map-read")
+        .build("TimestampResultBuffer");
+
+    return {
+        resolve(cmd: GPUCommandEncoder) {
+            cmd.resolveQuerySet(timestampQuerySet, 0, timestampCount * 2, timestampQueryBuffer, 0);
+            if (timestampResultBuffer.mapState === "unmapped") {
+                cmd.copyBufferToBuffer(timestampQueryBuffer, timestampResultBuffer);
+            }
+        },
+        update(...timers: ReturnType<typeof rollingAverage>[]) {
+            assert(timers.length === timestampCount);
+
+            // Collect GPU performance timings
+            if (timestampResultBuffer.mapState === "unmapped") {
+                timestampResultBuffer.mapAsync(GPUMapMode.READ).then(() => {
+                    const timestamps = new BigInt64Array(timestampResultBuffer.getMappedRange());
+
+                    for (let i = 0; i < timers.length; i++) {
+                        const timer = timers[i];
+                        const gpuTimeNs = Number(timestamps[i * 2 + 1] - timestamps[i * 2]);
+                        timer.add(gpuTimeNs / 1e6);
+                    }
+
+                    timestampResultBuffer.unmap();
+                });
+            }
+        },
+        getTimestampWrite(index: number) {
+            return {
+                querySet: timestampQuerySet,
+                beginningOfPassWriteIndex: index * 2,
+                endOfPassWriteIndex: index * 2 + 1,
+            }
+        }
     }
 }
