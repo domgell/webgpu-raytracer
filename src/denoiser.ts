@@ -1,122 +1,189 @@
 import * as GPU from "@domgell/webgpu-util";
-import {buildBindGroup, buildBuffer, buildTexture} from "@domgell/webgpu-builder";
+import {buildBindGroup, buildBindGroupLayout, buildBuffer, buildTexture} from "@domgell/webgpu-builder";
+import {TextureAtlas} from "@domgell/webgpu-samples";
+import * as Game from "@domgell/game-util";
+import {Raytracer} from "./raytracer.ts";
 
 export interface Denoiser {
-    run(encoder: GPUComputePassEncoder): void,
-    updateSettings(settings: Denoiser.Settings): void,
+    device: GPUDevice,
+    pipeline: GPUComputePipeline,
+    outputTexture: GPUTexture,
+    inputTexture: GPUTexture,
+    sampleInfoBuffer: GPUBuffer,
+    stateBuffer: GPUBuffer,
+    workgroupSize: number,
+    // Bind groups
+    stateBindGroup: GPUBindGroup,
+    pingTextureBindGroup: GPUBindGroup,
+    pongTextureBindGroup: GPUBindGroup,
+    sampleInfoBindGroup: GPUBindGroup,
 }
 
-export namespace Denoiser {
-    interface CreateArgs {
-        device: GPUDevice,
-        outputTexture: GPUTexture,
-        sampleInfoBuffer: GPUBuffer,
-        shader: string,
-        workgroupSize?: number,
-    }
+const denoiserSteps = 5;
+const minDynamicBufferOffset = 256;
 
-    export interface Settings {
-        sigmaColor: number,
-        sigmaNormal: number,
-        sigmaDepth: number,
-        sigmaAlbedo: number,
-        sigmaReflectPosition: number,
-        sigmaReflectDistance: number,
-    }
+export function createDenoiser({device, sampleInfoBuffer, outputTexture, shader, workgroupSize = 16}: {
+    device: GPUDevice,
+    sampleInfoBuffer: GPUBuffer,
+    outputTexture: GPUTexture,
+    shader: string,
+    workgroupSize?: number,
+}): Denoiser {
+    // ------------------------------------ Layout -------------------------------------
 
-    export function create({
-        device,
-        outputTexture,
-        sampleInfoBuffer,
+    // State bind group layout needs to be provided explicitly,
+    // because it uses dynamic buffer offset
+    const stateBindGroupLayout = buildBindGroupLayout(device)
+        .uniform({hasDynamicOffset: true})
+        .uniform()
+        .build("Denoiser.StateBindGroupLayout");
+
+    const bindGroupLayouts = GPU.generateBindGroupLayoutEntries(shader)
+        .map(entries => device.createBindGroupLayout({entries}));
+    bindGroupLayouts[0] = stateBindGroupLayout;
+
+    const layout = device.createPipelineLayout({
+        bindGroupLayouts,
+        label: "Denoiser.PipelineLayout"
+    });
+
+    // --------------------------------- Pipeline ----------------------------------
+
+    const pipeline = GPU.createComputePipeline(device, {
         shader,
-        workgroupSize = 8,
-    }: CreateArgs): Denoiser {
+        layout,
+        constants: {workgroupSize},
+        label: "Denoiser.Pipeline",
+    });
 
-        // --------------------------------- Pipeline ----------------------------------
+    const structByteSizes = GPU.shaderStructByteSizes(shader);
 
-        const pl = GPU.createComputePipeline(device, {
-            shader,
-            constants: {workgroupSize},
-            label: "Denoiser.Pipeline",
-        });
+    // ------------------------------- State Bind Group --------------------------------
 
-        const structByteSizes = GPU.shaderStructByteSizes(shader);
+    const stateBuffer = buildBuffer(device)
+        .size(structByteSizes.State)
+        .usage("uniform", "copy-dst")
+        .build("Denoiser.StateBuffer");
 
-        // ------------------------------- Bind Group 0 --------------------------------
+    const stepIndexBuffer = buildBuffer(device)
+        .size(denoiserSteps * minDynamicBufferOffset)
+        .usage("uniform")
+        .mapped()
+        .build("Denoiser.StepBuffer");
 
-        const stateBuffer = buildBuffer(device)
-            .size(structByteSizes.State)
-            .usage("uniform", "copy-dst")
-            .build("Denoiser.StateBuffer");
+    // Step value update needs to happen *during* compute pass encoding.
+    // Ideally immediates/pushconstants would be used for this when they are fully supported in WebGPU.
+    // Instead, each step index is stored and dynamic buffer offsets are used when encoding.
+    const range = new Uint32Array(stepIndexBuffer.getMappedRange());
+    for (let i = 0; i < denoiserSteps; i++) range[i * (minDynamicBufferOffset / 4)] = i;
+    stepIndexBuffer.unmap();
 
-        const bg0 = buildBindGroup(device)
-            .entries(stateBuffer, sampleInfoBuffer)
-            .layout(pl.getBindGroupLayout(0))
-            .build("Denoiser.BindGroup0");
+    const stateBindGroup = buildBindGroup(device)
+        .entries({buffer: stepIndexBuffer, size: 4}, stateBuffer)
+        .layout(stateBindGroupLayout)
+        .build("Denoiser.StateBindGroup");
 
-        // ------------------------------- Bind Group 1 --------------------------------
+    // ---------------------------------------------------------------------------------
 
-        const inputTexture = buildTexture(device)
-            .size(outputTexture.width, outputTexture.height)
-            .format(outputTexture.format)
-            .usage("storage-binding", "copy-dst")
-            .build("Denoiser.InputTexture");
+    const inputTexture = buildTexture(device)
+        .size(outputTexture.width, outputTexture.height)
+        .format(outputTexture.format)
+        .usage("storage-binding", "copy-dst")
+        .build("Denoiser.InputTexture");
 
-        // -------------------------------------------------------------------------------------
+    const pingTextureBindGroup = buildBindGroup(device)
+        .entries(outputTexture, inputTexture)
+        .layout(pipeline.getBindGroupLayout(2))
+        .build("Denoiser.PingTextureBindGroup");
 
-        const dispatchX = Math.ceil(outputTexture.width / workgroupSize);
-        const dispatchY = Math.ceil(outputTexture.height / workgroupSize);
+    const pongTextureBindGroup = buildBindGroup(device)
+        .entries(inputTexture, outputTexture)
+        .layout(pipeline.getBindGroupLayout(2))
+        .build("Denoiser.PongTextureBindGroup");
 
-        const denoiser: Denoiser = {
-            run(encoder) {
-                encoder.pushDebugGroup("Denoiser.ComputePass");
-                for (let i = 0; i < 5; i++) {
-                    encoder.pushDebugGroup(`Denoiser.Dispatch[${i}]`);
-                    encoder.setPipeline(pl);
+    const sampleInfoBindGroup = buildBindGroup(device)
+        .entries(sampleInfoBuffer)
+        .layout(pipeline.getBindGroupLayout(1))
+        .build("Denoiser.SampleInfoBindGroup");
 
-                    // Buffer update needs to happen *during* compute pass encoding,
-                    // ideally immediates/pushconstants would be used for this when they are fully supported in WebGPU
-                    const stepBuffer = buildBuffer(device)
-                        .size(GPU.Size.minimumUniformSize)
-                        .usage("uniform")
-                        .data(new Uint32Array([i]))
-                        .build(`Denoiser.StepBuffer[${i}]`);
+    // ---------------------------------------------------------------------------------
 
-                    const pingTexture = i % 2 === 0 ? inputTexture : outputTexture;
-                    const pongTexture = i % 2 === 0 ? outputTexture : inputTexture;
+    return {
+        device,
+        pipeline,
+        outputTexture,
+        inputTexture,
+        sampleInfoBuffer,
+        stateBuffer,
+        workgroupSize,
+        stateBindGroup,
+        pingTextureBindGroup,
+        pongTextureBindGroup,
+        sampleInfoBindGroup,
+    };
+}
 
-                    const bg1 = buildBindGroup(device)
-                        .entries(stepBuffer, pongTexture, pingTexture)
-                        .layout(pl.getBindGroupLayout(1))
-                        .build(`Denoiser.BindGroup1[${i}]`);
+export function resizeDenoiser(denoiser: Denoiser, newOutputTexture: GPUTexture, newSampleInfoBuffer: GPUBuffer) {
+    denoiser.outputTexture = newOutputTexture;
 
-                    encoder.setBindGroup(0, bg0);
-                    encoder.setBindGroup(1, bg1);
-                    encoder.dispatchWorkgroups(dispatchX, dispatchY);
-                    encoder.popDebugGroup();
-                }
-                encoder.popDebugGroup();
-            },
-            updateSettings(settings) {
-                GPU.writeBuffer(device, stateBuffer, [
-                    settings.sigmaColor,
-                    settings.sigmaNormal,
-                    settings.sigmaDepth,
-                    settings.sigmaAlbedo,
-                    settings.sigmaReflectPosition,
-                    settings.sigmaReflectDistance,
-                ]);
-            }
-        };
+    denoiser.inputTexture.destroy();
+    denoiser.inputTexture = buildTexture(denoiser.device)
+        .size(newOutputTexture.width, newOutputTexture.height)
+        .format(newOutputTexture.format)
+        .usage(denoiser.inputTexture.usage)
+        .build(denoiser.inputTexture.label);
 
-        denoiser.updateSettings({
-            sigmaColor: 3,
-            sigmaNormal: 0.3,
-            sigmaDepth: 0.5,
-            sigmaAlbedo: 0.01,
-            sigmaReflectPosition: 0.5,
-            sigmaReflectDistance: 0.25,
-        });
-        return denoiser;
+    denoiser.sampleInfoBuffer = newSampleInfoBuffer;
+    denoiser.sampleInfoBindGroup = buildBindGroup(denoiser.device)
+        .entries(denoiser.sampleInfoBuffer)
+        .layout(denoiser.pipeline.getBindGroupLayout(1))
+        .build(denoiser.sampleInfoBindGroup.label);
+
+    denoiser.pingTextureBindGroup = buildBindGroup(denoiser.device)
+        .entries(denoiser.outputTexture, denoiser.inputTexture)
+        .layout(denoiser.pipeline.getBindGroupLayout(2))
+        .build(denoiser.pingTextureBindGroup.label);
+
+    denoiser.pongTextureBindGroup = buildBindGroup(denoiser.device)
+        .entries(denoiser.inputTexture, denoiser.outputTexture)
+        .layout(denoiser.pipeline.getBindGroupLayout(2))
+        .build(denoiser.pongTextureBindGroup.label);
+}
+
+export function runDenoiser(denoiser: Denoiser, pass: GPUComputePassEncoder) {
+    pass.pushDebugGroup("Denoiser.ComputePass");
+
+    for (let i = 0; i < denoiserSteps; i++) {
+        pass.pushDebugGroup(`Denoiser.Dispatch[${i}]`);
+        pass.setPipeline(denoiser.pipeline);
+
+        pass.setBindGroup(0, denoiser.stateBindGroup, [i * minDynamicBufferOffset]);
+        pass.setBindGroup(1, denoiser.sampleInfoBindGroup);
+        pass.setBindGroup(2, i % 2 === 0 ? denoiser.pingTextureBindGroup : denoiser.pongTextureBindGroup);
+
+        const dispatchX = Math.ceil(denoiser.outputTexture.width / denoiser.workgroupSize);
+        const dispatchY = Math.ceil(denoiser.outputTexture.height / denoiser.workgroupSize);
+        pass.dispatchWorkgroups(dispatchX, dispatchY);
+        pass.popDebugGroup();
     }
+
+    pass.popDebugGroup();
+}
+
+export function updateDenoiserSettings(denoiser: Denoiser, settings: {
+    sigmaColor: number,
+    sigmaNormal: number,
+    sigmaDepth: number,
+    sigmaAlbedo: number,
+    sigmaReflectPosition: number,
+    sigmaReflectDistance: number,
+}) {
+    GPU.writeBuffer(denoiser.device, denoiser.stateBuffer, [
+        settings.sigmaColor,
+        settings.sigmaNormal,
+        settings.sigmaDepth,
+        settings.sigmaAlbedo,
+        settings.sigmaReflectPosition,
+        settings.sigmaReflectDistance,
+    ]);
 }

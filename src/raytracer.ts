@@ -6,256 +6,296 @@ import {packNormalizedRgb1} from "@domgell/webgpu-util";
 import {Scene} from "./scene.ts";
 
 export interface Raytracer {
-    run(encoder: GPUComputePassEncoder): void,
-    updateSettings(state: Raytracer.Settings): void,
-    updateScene(scene: Scene): void,
-    resetAccumulation(): void,
-    outputTexture: GPUTexture,
+    device: GPUDevice,
+    stateBuffer: GPUBuffer,
+    pipeline: GPUComputePipeline,
+    screenWidth: number,
+    screenHeight: number,
+    workgroupSize: number,
+    frameIndex: number,
     sampleInfoBuffer: GPUBuffer,
+    accumulationBuffer: GPUBuffer,
+    sampleInfoByteSize: number,
+    // Bind groups
+    sceneBindGroup: GPUBindGroup,
+    screenBindGroup: GPUBindGroup,
+    stateBindGroup: GPUBindGroup,
+    textureAtlasBindGroup: GPUBindGroup,
+    // Scene
+    sceneBufferWriter: ArrayBufferWriter,
+    triangleBuffer: GPUBuffer,
+    meshBaseBuffer: GPUBuffer,
+    meshInstanceBuffer: GPUBuffer,
+    materialBuffer: GPUBuffer,
+    lightMeshIndicesBuffer: GPUBuffer,
+    meshNodesBuffer: GPUBuffer,
+    sceneNodesBuffer: GPUBuffer,
 }
 
-export namespace Raytracer {
-    interface CreateArgs {
-        device: GPUDevice,
-        outputTexture: GPUTexture,
-        cameraBuffer: GPUBuffer,
-        textureAtlas: TextureAtlas,
-        shader: string,
-        workgroupSize?: number,
-    }
+const maxTriangles = 1024;
+const maxMeshBases = 64;
+const maxMeshInstances = 128;
+const maxMaterials = 128;
+const maxMeshNodes = 1024;
+const maxSceneNodes = 256;
 
-    export interface Settings {
-        raysPerPixel: number,
-        maxRayBounces: number,
-        nee: boolean,
-    }
+export function createRaytracer({device, outputTexture, cameraBuffer, textureAtlas, shader, workgroupSize = 16}: {
+    device: GPUDevice,
+    outputTexture: GPUTexture,
+    cameraBuffer: GPUBuffer,
+    textureAtlas: TextureAtlas,
+    shader: string,
+    workgroupSize?: number,
+}): Raytracer {
+    // --------------------------------- Pipeline ----------------------------------
 
-    const maxTriangles = 1024;
-    const maxMeshBases = 64;
-    const maxMeshInstances = 128;
-    const maxMaterials = 128;
-    const maxMeshNodes = 1024;
-    const maxSceneNodes = 256;
-
-    export function create({
-        device,
-        outputTexture,
-        cameraBuffer,
-        textureAtlas,
+    const pipeline = GPU.createComputePipeline(device, {
         shader,
-        workgroupSize = 16
-    }: CreateArgs): Raytracer {
+        constants: {workgroupSize},
+        label: "Raytracer.Pipeline",
+    });
 
-        // --------------------------------- Pipeline ----------------------------------
+    const structByteSizes = GPU.shaderStructByteSizes(shader);
 
-        const pl = GPU.createComputePipeline(device, {
-            shader,
-            constants: {workgroupSize},
-            label: "Raytracer.Pipeline",
-        });
+    // ------------------------------- Bind Group 0 --------------------------------
 
-        const structByteSizes = GPU.shaderStructByteSizes(shader);
+    const triangleBuffer = buildBuffer(device)
+        .size(structByteSizes.Triangle * maxTriangles)
+        .usage("storage", "copy-dst")
+        .build("Raytracer.TriangleBuffer");
 
-        // ------------------------------- Bind Group 0 --------------------------------
+    const meshBaseBuffer = buildBuffer(device)
+        .size(structByteSizes.MeshBase * maxMeshBases)
+        .usage("storage", "copy-dst")
+        .build("Raytracer.MeshBaseBuffer");
 
-        const triangleBuffer = buildBuffer(device)
-            .size(structByteSizes.Triangle * maxTriangles)
-            .usage("storage", "copy-dst")
-            .build("Raytracer.TriangleBuffer");
+    const meshInstanceBuffer = buildBuffer(device)
+        .size(structByteSizes.MeshInstance * maxMeshInstances)
+        .usage("storage", "copy-dst")
+        .build("Raytracer.MeshInstanceBuffer");
 
-        const meshBaseBuffer = buildBuffer(device)
-            .size(structByteSizes.MeshBase * maxMeshBases)
-            .usage("storage", "copy-dst")
-            .build("Raytracer.MeshBaseBuffer");
+    const materialBuffer = buildBuffer(device)
+        .size(structByteSizes.Material * maxMaterials)
+        .usage("storage", "copy-dst")
+        .build("Raytracer.MaterialBuffer");
 
-        const meshInstanceBuffer = buildBuffer(device)
-            .size(structByteSizes.MeshInstance * maxMeshInstances)
-            .usage("storage", "copy-dst")
-            .build("Raytracer.MeshInstanceBuffer");
+    const lightMeshIndicesBuffer = buildBuffer(device)
+        .size(GPU.Size.u32 * maxMeshInstances)
+        .usage("storage", "copy-dst")
+        .build("Raytracer.LightMeshIndicesBuffer");
 
-        const materialBuffer = buildBuffer(device)
-            .size(structByteSizes.Material * maxMaterials)
-            .usage("storage", "copy-dst")
-            .build("Raytracer.MaterialBuffer");
+    const meshNodesBuffer = buildBuffer(device)
+        .size(structByteSizes.Node * maxMeshNodes)
+        .usage("storage", "copy-dst")
+        .build("Raytracer.MeshNodesBuffer");
 
-        const lightMeshIndicesBuffer = buildBuffer(device)
-            .size(GPU.Size.u32 * maxMeshInstances)
-            .usage("storage", "copy-dst")
-            .build("Raytracer.LightMeshIndicesBuffer");
+    const sceneNodesBuffer = buildBuffer(device)
+        .size(structByteSizes.Node * maxSceneNodes)
+        .usage("storage", "copy-dst")
+        .build("Raytracer.SceneNodesBuffer");
 
-        const meshNodesBuffer = buildBuffer(device)
-            .size(structByteSizes.Node * maxMeshNodes)
-            .usage("storage", "copy-dst")
-            .build("Raytracer.MeshNodesBuffer");
+    const sceneBindGroup = buildBindGroup(device)
+        .layout(pipeline.getBindGroupLayout(0))
+        .entries(triangleBuffer, meshBaseBuffer, meshInstanceBuffer, materialBuffer, lightMeshIndicesBuffer, meshNodesBuffer, sceneNodesBuffer)
+        .build("Raytracer.BindGroup0");
 
-        const sceneNodesBuffer = buildBuffer(device)
-            .size(structByteSizes.Node * maxSceneNodes)
-            .usage("storage", "copy-dst")
-            .build("Raytracer.SceneNodesBuffer");
+    // ------------------------------- Bind Group 1 --------------------------------
 
-        const bg0 = buildBindGroup(device)
-            .layout(pl.getBindGroupLayout(0))
-            .entries(triangleBuffer, meshBaseBuffer, meshInstanceBuffer, materialBuffer, lightMeshIndicesBuffer, meshNodesBuffer, sceneNodesBuffer)
-            .build("Raytracer.BindGroup0");
+    const accumulationBuffer = buildBuffer(device)
+        .size(GPU.Size.vec4f * outputTexture.width * outputTexture.height)
+        .usage("storage")
+        .build("Raytracer.AccumulationBuffer");
 
-        // ------------------------------- Bind Group 1 --------------------------------
+    const sampleInfoBuffer = buildBuffer(device)
+        .size(structByteSizes.SampleInfo * outputTexture.width * outputTexture.height)
+        .usage("storage")
+        .build("Raytracer.SampleInfoBuffer");
 
-        const accumulationBuffer = buildBuffer(device)
-            .size(GPU.Size.vec4f * outputTexture.width * outputTexture.height)
-            .usage("storage")
-            .build("Raytracer.AccumulationBuffer");
+    const screenBindGroup = buildBindGroup(device)
+        .layout(pipeline.getBindGroupLayout(1))
+        .entries(outputTexture, accumulationBuffer, sampleInfoBuffer)
+        .build("Raytracer.BindGroup1");
 
-        const sampleInfoBuffer = buildBuffer(device)
-            .size(structByteSizes.SampleInfo * outputTexture.width * outputTexture.height)
-            .usage("storage")
-            .build("Raytracer.SampleInfoBuffer");
+    // ------------------------------- Bind Group 2 --------------------------------
 
-        const bg1 = buildBindGroup(device)
-            .layout(pl.getBindGroupLayout(1))
-            .entries(outputTexture, accumulationBuffer, sampleInfoBuffer)
-            .build("Raytracer.BindGroup2");
+    const stateBuffer = buildBuffer(device)
+        .size(structByteSizes.State)
+        .usage("uniform", "copy-dst")
+        .build("Raytracer.StateBuffer");
 
-        // ------------------------------- Bind Group 2 --------------------------------
+    const stateBindGroup = buildBindGroup(device)
+        .layout(pipeline.getBindGroupLayout(2))
+        .entries(stateBuffer, cameraBuffer)
+        .build("Raytracer.BindGroup2");
 
-        const stateBuffer = buildBuffer(device)
-            .size(structByteSizes.State)
-            .usage("uniform", "copy-dst")
-            .build("Raytracer.StateBuffer");
+    // ------------------------------- Bind Group 3 --------------------------------
 
-        const bg2 = buildBindGroup(device)
-            .layout(pl.getBindGroupLayout(2))
-            .entries(stateBuffer, cameraBuffer)
-            .build("Raytracer.BindGroup2");
+    const textureAtlasSampler = getSamplerFilterNearestClampToEdge(device);
 
-        // ------------------------------- Bind Group 3 --------------------------------
+    const textureAtlasBindGroup = buildBindGroup(device)
+        .layout(pipeline.getBindGroupLayout(3))
+        .entries(textureAtlas.texture, textureAtlasSampler, textureAtlas.minMaxBuffer)
+        .build("Raytracer.BindGroup3");
 
-        const textureAtlasSampler = getSamplerFilterNearestClampToEdge(device);
+    // ---------------------------------------------------------------------------------
 
-        const bg3 = buildBindGroup(device)
-            .layout(pl.getBindGroupLayout(3))
-            .entries(textureAtlas.texture, textureAtlasSampler, textureAtlas.minMaxBuffer)
-            .build("Raytracer.BindGroup3");
+    const sceneBufferWriter = ArrayBufferWriter(Math.max(
+        meshInstanceBuffer.size, materialBuffer.size, triangleBuffer.size, meshNodesBuffer.size, sceneNodesBuffer.size
+    ));
 
-        // -----------------------------------------------------------------------------
+    return {
+        device,
+        stateBuffer,
+        pipeline,
+        screenWidth: outputTexture.width,
+        screenHeight: outputTexture.height,
+        workgroupSize,
+        frameIndex: 0,
+        sampleInfoBuffer,
+        accumulationBuffer,
+        sampleInfoByteSize: structByteSizes.SampleInfo,
+        sceneBindGroup,
+        screenBindGroup,
+        stateBindGroup,
+        textureAtlasBindGroup,
+        sceneBufferWriter,
+        triangleBuffer,
+        meshBaseBuffer,
+        meshInstanceBuffer,
+        materialBuffer,
+        lightMeshIndicesBuffer,
+        meshNodesBuffer,
+        sceneNodesBuffer,
+    };
+}
 
-        const dispatchX = Math.ceil(outputTexture.width / workgroupSize);
-        const dispatchY = Math.ceil(outputTexture.height / workgroupSize);
-        const bufferWriter = ArrayBufferWriter(Math.max(
-            meshInstanceBuffer.size, materialBuffer.size, triangleBuffer.size, meshNodesBuffer.size, sceneNodesBuffer.size
-        ));
+export function resizeRaytracer(rt: Raytracer, newOutputTexture: GPUTexture) {
+    rt.screenWidth = newOutputTexture.width;
+    rt.screenHeight = newOutputTexture.height;
 
-        let frameIndex = 0;
+    rt.accumulationBuffer.destroy();
+    rt.accumulationBuffer = buildBuffer(rt.device)
+        .size(GPU.Size.vec4f * rt.screenWidth * rt.screenHeight)
+        .usage(rt.accumulationBuffer.usage)
+        .build(rt.accumulationBuffer.label);
 
-        const raytracer: Raytracer = {
-            outputTexture,
-            sampleInfoBuffer,
-            run(encoder) {
-                GPU.writeBuffer(device, stateBuffer, new Uint32Array([frameIndex++]));
+    rt.sampleInfoBuffer.destroy();
+    rt.sampleInfoBuffer = buildBuffer(rt.device)
+        .size(rt.sampleInfoByteSize * rt.screenWidth * rt.screenHeight)
+        .usage(rt.sampleInfoBuffer.usage)
+        .build(rt.sampleInfoBuffer.label);
 
-                encoder.pushDebugGroup("Raytracer.ComputePass");
-                encoder.setPipeline(pl);
-                encoder.setBindGroup(0, bg0);
-                encoder.setBindGroup(1, bg1);
-                encoder.setBindGroup(2, bg2);
-                encoder.setBindGroup(3, bg3);
-                encoder.dispatchWorkgroups(dispatchX, dispatchY);
-                encoder.popDebugGroup();
-            },
-            resetAccumulation() {
-                frameIndex = 0;
-            },
-            updateSettings(state) {
-                this.resetAccumulation();
+    rt.screenBindGroup = buildBindGroup(rt.device)
+        .layout(rt.pipeline.getBindGroupLayout(1))
+        .entries(newOutputTexture, rt.accumulationBuffer, rt.sampleInfoBuffer)
+        .build(rt.screenBindGroup.label);
+}
 
-                GPU.writeBuffer(device, stateBuffer, new Uint32Array([
-                    state.raysPerPixel,
-                    state.maxRayBounces,
-                    state.nee ? 1 : 0,
-                ]), {writeOffset: GPU.Size.u32});
-            },
-            updateScene(scene) {
-                this.resetAccumulation();
+export function runRaytracer(rt: Raytracer, pass: GPUComputePassEncoder) {
+    GPU.writeBuffer(rt.device, rt.stateBuffer, new Uint32Array([rt.frameIndex++]));
 
-                bufferWriter.reset();
-                for (const triangle of scene.triangles) {
-                    bufferWriter
-                        .vec3f(triangle.a)
-                        .vec3f(triangle.b)
-                        .vec3f(triangle.c)
-                        .vec3f(triangle.normal)
-                        .vec2f(triangle.auv)
-                        .vec2f(triangle.buv)
-                        .vec2f(triangle.cuv);
-                }
-                GPU.writeBuffer(device, triangleBuffer, bufferWriter.arrayBuffer, {writeSize: triangleBuffer.size});
+    pass.pushDebugGroup("Raytracer.ComputePass");
 
-                bufferWriter.reset();
-                for (const meshInstance of scene.meshInstances) {
-                    bufferWriter
-                        .mat4x4f(meshInstance.transform)
-                        .mat4x4f(meshInstance.invTransform)
-                        .mat4x4f(meshInstance.invTransposeTransform)
-                        .u32(meshInstance.meshBaseIndex)
-                        .u32(meshInstance.materialIndex);
-                }
-                GPU.writeBuffer(device, meshInstanceBuffer, bufferWriter.arrayBuffer, {writeSize: meshInstanceBuffer.size});
+    pass.setPipeline(rt.pipeline);
+    pass.setBindGroup(0, rt.sceneBindGroup);
+    pass.setBindGroup(1, rt.screenBindGroup);
+    pass.setBindGroup(2, rt.stateBindGroup);
+    pass.setBindGroup(3, rt.textureAtlasBindGroup);
 
-                bufferWriter.reset();
-                for (const meshBase of scene.meshBases) {
-                    bufferWriter
-                        .vec3f(meshBase.bounds.min)
-                        .u32(meshBase.nodeStart)
-                        .vec3f(meshBase.bounds.max)
-                        .u32(meshBase.triangleStart)
-                        .u32(meshBase.triangleCount);
-                }
-                GPU.writeBuffer(device, meshBaseBuffer, bufferWriter.arrayBuffer, {writeSize: meshBaseBuffer.size});
+    const dispatchX = Math.ceil(rt.screenWidth / rt.workgroupSize);
+    const dispatchY = Math.ceil(rt.screenHeight / rt.workgroupSize);
+    pass.dispatchWorkgroups(dispatchX, dispatchY);
 
-                bufferWriter.reset();
-                for (const material of scene.materials) {
-                    bufferWriter
-                        .u32(packNormalizedRgb1(material.color))
-                        .f32(material.roughness)
-                        .f32(material.light)
-                        .u32(material.textureId);
-                }
-                GPU.writeBuffer(device, materialBuffer, bufferWriter.arrayBuffer, {writeSize: materialBuffer.size});
+    pass.popDebugGroup();
+}
 
-                bufferWriter.reset();
-                for (const meshNode of scene.meshNodes) {
-                    bufferWriter
-                        .vec3f(meshNode.bounds.min)
-                        .u32(meshNode.leftOrOffset)
-                        .vec3f(meshNode.bounds.max)
-                        .u32(meshNode.countOrLeaf);
-                }
-                GPU.writeBuffer(device, meshNodesBuffer, bufferWriter.arrayBuffer, {writeSize: meshNodesBuffer.size});
+export function updateRaytracerSettings(rt: Raytracer, settings: {
+    raysPerPixel: number,
+    maxRayBounces: number,
+    nee: boolean
+}) {
+    rt.frameIndex = 0; // Reset accumulation
 
-                bufferWriter.reset();
-                for (const sceneNode of scene.sceneNodes) {
-                    bufferWriter
-                        .vec3f(sceneNode.bounds.min)
-                        .u32(sceneNode.leftOrOffset)
-                        .vec3f(sceneNode.bounds.max)
-                        .u32(sceneNode.countOrLeaf);
-                }
-                GPU.writeBuffer(device, sceneNodesBuffer, bufferWriter.arrayBuffer, {writeSize: sceneNodesBuffer.size});
+    const data = new Uint32Array([settings.raysPerPixel, settings.maxRayBounces, settings.nee ? 1 : 0]);
+    GPU.writeBuffer(rt.device, rt.stateBuffer, data, {writeOffset: GPU.Size.u32});
+}
 
-                const lightMeshIndices: number[] = [];
-                for (let i = 0; i < scene.meshInstances.length; i++) {
-                    const material = scene.materials[scene.meshInstances[i].materialIndex];
-                    if (material.light > 0) lightMeshIndices.push(i);
-                }
-                GPU.writeBuffer(device, lightMeshIndicesBuffer, new Uint32Array(lightMeshIndices));
+export function updateRaytracerScene(rt: Raytracer, scene: Scene) {
+    rt.frameIndex = 0; // Reset accumulation
 
-                GPU.writeBuffer(device, stateBuffer, new Uint32Array([
-                    scene.meshInstances.length,
-                    lightMeshIndices.length,
-                ]), {writeOffset: 4 * GPU.Size.u32});
-            },
-        };
-
-        raytracer.updateSettings({raysPerPixel: 2, nee: true, maxRayBounces: 4});
-        return raytracer;
+    for (const triangle of scene.triangles) {
+        rt.sceneBufferWriter
+            .vec3f(triangle.a)
+            .vec3f(triangle.b)
+            .vec3f(triangle.c)
+            .vec3f(triangle.normal)
+            .vec2f(triangle.auv)
+            .vec2f(triangle.buv)
+            .vec2f(triangle.cuv);
     }
+    GPU.writeBuffer(rt.device, rt.triangleBuffer, rt.sceneBufferWriter.arrayBuffer, {writeSize: rt.triangleBuffer.size});
+
+    rt.sceneBufferWriter.reset();
+    for (const meshInstance of scene.meshInstances) {
+        rt.sceneBufferWriter
+            .mat4x4f(meshInstance.transform)
+            .mat4x4f(meshInstance.invTransform)
+            .mat4x4f(meshInstance.invTransposeTransform)
+            .u32(meshInstance.meshBaseIndex)
+            .u32(meshInstance.materialIndex);
+    }
+    GPU.writeBuffer(rt.device, rt.meshInstanceBuffer, rt.sceneBufferWriter.arrayBuffer, {writeSize: rt.meshInstanceBuffer.size});
+
+    rt.sceneBufferWriter.reset();
+    for (const meshBase of scene.meshBases) {
+        rt.sceneBufferWriter
+            .vec3f(meshBase.bounds.min)
+            .u32(meshBase.nodeStart)
+            .vec3f(meshBase.bounds.max)
+            .u32(meshBase.triangleStart)
+            .u32(meshBase.triangleCount);
+    }
+    GPU.writeBuffer(rt.device, rt.meshBaseBuffer, rt.sceneBufferWriter.arrayBuffer, {writeSize: rt.meshBaseBuffer.size});
+
+    rt.sceneBufferWriter.reset();
+    for (const material of scene.materials) {
+        rt.sceneBufferWriter
+            .u32(packNormalizedRgb1(material.color))
+            .f32(material.roughness)
+            .f32(material.light)
+            .u32(material.textureId);
+    }
+    GPU.writeBuffer(rt.device, rt.materialBuffer, rt.sceneBufferWriter.arrayBuffer, {writeSize: rt.materialBuffer.size});
+
+    rt.sceneBufferWriter.reset();
+    for (const meshNode of scene.meshNodes) {
+        rt.sceneBufferWriter
+            .vec3f(meshNode.bounds.min)
+            .u32(meshNode.leftOrOffset)
+            .vec3f(meshNode.bounds.max)
+            .u32(meshNode.countOrLeaf);
+    }
+    GPU.writeBuffer(rt.device, rt.meshNodesBuffer, rt.sceneBufferWriter.arrayBuffer, {writeSize: rt.meshNodesBuffer.size});
+
+    rt.sceneBufferWriter.reset();
+    for (const sceneNode of scene.sceneNodes) {
+        rt.sceneBufferWriter
+            .vec3f(sceneNode.bounds.min)
+            .u32(sceneNode.leftOrOffset)
+            .vec3f(sceneNode.bounds.max)
+            .u32(sceneNode.countOrLeaf);
+    }
+    GPU.writeBuffer(rt.device, rt.sceneNodesBuffer, rt.sceneBufferWriter.arrayBuffer, {writeSize: rt.sceneNodesBuffer.size});
+
+    const lightMeshIndices: number[] = [];
+    for (let i = 0; i < scene.meshInstances.length; i++) {
+        const material = scene.materials[scene.meshInstances[i].materialIndex];
+        if (material.light > 0) lightMeshIndices.push(i);
+    }
+    GPU.writeBuffer(rt.device, rt.lightMeshIndicesBuffer, new Uint32Array(lightMeshIndices));
+
+    GPU.writeBuffer(rt.device, rt.stateBuffer, new Uint32Array([
+        scene.meshInstances.length,
+        lightMeshIndices.length,
+    ]), {writeOffset: 4 * GPU.Size.u32});
 }

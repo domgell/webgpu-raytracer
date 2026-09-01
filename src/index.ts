@@ -1,8 +1,21 @@
 import * as GPU from "@domgell/webgpu-util";
 import * as Game from "@domgell/game-util";
 import {ImGui, ImGuiImplWeb} from "@mori2003/jsimgui";
-import {Raytracer} from "./raytracer.ts";
-import {TextureAtlas, DebugRenderer, TextureCopyRenderer, FullscreenRenderer} from "@domgell/webgpu-samples";
+import {
+    createRaytracer,
+    Raytracer,
+    resizeRaytracer,
+    runRaytracer,
+    updateRaytracerScene,
+    updateRaytracerSettings
+} from "./raytracer.ts";
+import {
+    TextureAtlas,
+    DebugRenderer,
+    TextureCopyRenderer,
+    FullscreenRenderer,
+    getSamplerFilterNearestClampToEdge
+} from "@domgell/webgpu-samples";
 import {mat4, vec2, vec3} from "dom-game-math";
 import {Input} from "@domgell/game-input";
 import {defaultColorTargetState, generatePipelineLayout} from "@domgell/webgpu-util";
@@ -17,7 +30,7 @@ import {
 } from "./util.ts";
 import {drawMeshUI, drawSettingsUI, Settings} from "./ui.ts";
 import {Scene} from "./scene.ts";
-import {Denoiser} from "./denoiser.ts";
+import {createDenoiser, Denoiser, resizeDenoiser, runDenoiser, updateDenoiserSettings} from "./denoiser.ts";
 import {BVH} from "./bvh.ts";
 import {assert, fail} from "@domgell/ts-util";
 
@@ -59,7 +72,7 @@ const timestampState = timestampQuerySupport ? createTimestampState(device, 3) :
 
 // ---------------------------------- Init Renderers -----------------------------------
 
-const outputTexture = buildTexture(device)
+let outputTexture = buildTexture(device)
     .size(canvas.width, canvas.height)
     .format("rgba8unorm")
     .usage("storage-binding", "copy-src", "texture-binding")
@@ -72,7 +85,7 @@ const cameraBuffer = buildBuffer(device)
     .usage("uniform", "copy-dst")
     .build("CameraBuffer");
 
-const raytracer = Raytracer.create({
+const raytracer = createRaytracer({
     device,
     outputTexture,
     cameraBuffer,
@@ -80,7 +93,7 @@ const raytracer = Raytracer.create({
     shader: await Game.importText("shaders/raytrace.wgsl"),
 });
 
-const denoiser = Denoiser.create({
+const denoiser = createDenoiser({
     device,
     outputTexture,
     sampleInfoBuffer: raytracer.sampleInfoBuffer,
@@ -90,14 +103,24 @@ const denoiser = Denoiser.create({
 const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
 const colorState = defaultColorTargetState({format: canvasFormat});
 const debugRenderer = DebugRenderer.create({device, camera: cameraBuffer, color: colorState});
-const outputRenderer = TextureCopyRenderer.create({device, texture: outputTexture, color: colorState});
+
+const outputRenderer = FullscreenRenderer.create({
+    device,
+    color: colorState,
+    shader: await Game.importText("shaders/output.wgsl")
+});
+
+let outputRendererBG = buildBindGroup(device)
+    .layout(outputRenderer.getBindGroupLayout(0))
+    .entries(outputTexture)
+    .build("OutputRenderer.BindGroup");
 
 // ------------------------------------ Init Scene -------------------------------------
 
 const camera = Game.Camera3d.create(saved?.camera ?? {position: vec3.new(0, 4, -11)});
 
 const scene = await createRoomScene();
-raytracer.updateScene(scene);
+updateRaytracerScene(raytracer, scene);
 
 // ------------------------------------- Settings --------------------------------------
 
@@ -123,14 +146,39 @@ const settings: Settings = {
     fps: 0,
 };
 
-raytracer.updateSettings(settings);
-denoiser.updateSettings(settings);
+updateRaytracerSettings(raytracer, settings);
+updateDenoiserSettings(denoiser, settings);
 
 // -------------------------------------- Update ---------------------------------------
 
 let pickMesh: Scene.MeshInstance | undefined;
 
 Game.runUpdate((dt, t) => {
+
+    // ------------------------------------ Resize -------------------------------------
+
+    canvas.width = window.innerWidth - 20;
+    canvas.height = window.innerHeight - 20;
+
+    if (canvas.width !== outputTexture.width || canvas.height !== outputTexture.height) {
+        context.configure(context.getConfiguration()!);
+
+        outputTexture.destroy();
+        outputTexture = buildTexture(device)
+            .size(canvas.width, canvas.height)
+            .format(outputTexture.format)
+            .usage(outputTexture.usage)
+            .build(outputTexture.label);
+
+        outputRendererBG = buildBindGroup(device)
+            .layout(outputRenderer.getBindGroupLayout(0))
+            .entries(outputTexture)
+            .build("OutputRenderer.BindGroup");
+
+        resizeRaytracer(raytracer, outputTexture);
+        resizeDenoiser(denoiser, outputTexture, raytracer.sampleInfoBuffer);
+        raytracer.frameIndex = 0;
+    }
 
     // ------------------------------------- Input -------------------------------------
 
@@ -143,7 +191,7 @@ Game.runUpdate((dt, t) => {
             move: vec2.mul(input.wasd(), dt * 15),
             look: vec2.mul(input.mouseDelta(), 0.1),
         });
-        raytracer.resetAccumulation();
+        raytracer.frameIndex = 0; // Reset accumulation on camera move
     }
 
     const viewProjection = camera.viewProjection(canvas.width / canvas.height);
@@ -164,13 +212,13 @@ Game.runUpdate((dt, t) => {
     ImGui.SetNextWindowPos({x: 0, y: 0}, ImGui.Cond.FirstUseEver);
     ImGui.Begin("Settings", null, ImGui.WindowFlags.AlwaysAutoResize);
 
-    if (drawSettingsUI(settings)) raytracer.updateSettings(settings);
+    if (drawSettingsUI(settings)) updateRaytracerSettings(raytracer, settings);
 
     // Rebuild scene BVH and write scene data on mesh update
     if (drawMeshUI(pickMesh, scene, textureAtlas)) {
         scene.sceneNodes.length = 0;
         BVH.buildSceneNodes(scene);
-        raytracer.updateScene(scene);
+        updateRaytracerScene(raytracer, scene);
     }
 
     ImGui.End();
@@ -182,7 +230,8 @@ Game.runUpdate((dt, t) => {
     if (settings.showSceneBVH) drawSceneNodes(scene, debugRenderer);
     if (settings.showMeshBVH) drawMeshNodes(scene, debugRenderer);
 
-    if (!settings.accumulation) raytracer.resetAccumulation();
+    // Disable accumulation
+    if (!settings.accumulation) raytracer.frameIndex = 0;
 
     // ------------------------------------ Render -------------------------------------
 
@@ -193,14 +242,14 @@ Game.runUpdate((dt, t) => {
 
     // Run raytracing compute shader
     const raytracePass = cmd.beginComputePass({timestampWrites: timestampState?.getTimestampWrite(0)});
-    raytracer.run(raytracePass);
+    runRaytracer(raytracer, raytracePass);
     raytracePass.end();
 
     // Run denoising compute shader
     if (settings.denoising) {
         const denoisePass = cmd.beginComputePass({timestampWrites: timestampState?.getTimestampWrite(1)});
-        raytracer.resetAccumulation();
-        denoiser.run(denoisePass);
+        raytracer.frameIndex = 0; // Disable accumulation when using denoising
+        runDenoiser(denoiser, denoisePass);
         denoisePass.end();
     } else {
         gpuDenoiserComputeTime.clear();
@@ -212,7 +261,7 @@ Game.runUpdate((dt, t) => {
         colorAttachments: [GPU.createColorAttachment(currentTexture, [0, 0, 0, 1])],
         timestampWrites: timestampState?.getTimestampWrite(2),
     });
-    outputRenderer.render(renderPass);
+    outputRenderer.render(renderPass, [outputRendererBG]);
     debugRenderer.render(renderPass);
     ImGuiImplWeb.EndRender(renderPass);
     renderPass.end();

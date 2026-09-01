@@ -1,9 +1,10 @@
-@group(0) @binding(0) var<uniform> state: State;
-@group(0) @binding(1) var<storage, read> sampleInfos: array<SampleInfo>;
+@group(0) @binding(0) var<uniform> stepIndex: u32;
+@group(0) @binding(1) var<uniform> state: State;
 
-@group(1) @binding(0) var<uniform> stepIndex: u32;
-@group(1) @binding(1) var inputTexture: texture_storage_2d<rgba8unorm, read>;
-@group(1) @binding(2) var outputTexture: texture_storage_2d<rgba8unorm, write>;
+@group(1) @binding(0) var<storage, read> sampleInfos: array<SampleInfo>;
+
+@group(2) @binding(0) var inputTexture: texture_storage_2d<rgba8unorm, read>;
+@group(2) @binding(1) var outputTexture: texture_storage_2d<rgba8unorm, write>;
 
 // --------------------------------------- State ---------------------------------------
 
