@@ -6,7 +6,7 @@
 This is a WebGPU, compute shader based implementation of ray tracing along with a few acceleration techniques such as BVH, NEE and a bilateral denoising filter.
 
 # Usage
-**A web based version is hosted at: [domgell.github.io](https://domgell.github.io/webgpu-raytracer/demo/)**
+**A web based version is hosted at: [domgell.github.io](https://domgell.github.io/webgpu-raytracer/)**
 
 Note, this requires your device supports WebGPU and a relatively modern dedicated GPU for optimal performance. 
 Check [Implementation-Status](https://github.com/gpuweb/gpuweb/wiki/Implementation-Status) for more information on WebGPU support.
